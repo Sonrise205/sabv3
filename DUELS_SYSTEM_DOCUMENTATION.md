@@ -706,3 +706,399 @@ end)
 | What prevents dual-server presence? | **NOTHING VISIBLE** - Standard Roblox session management only |
 
 **Severity: CRITICAL** - This represents a potential economy-breaking exploit that could allow systematic duplication of high-value items through coordinated server manipulation.
+
+---
+
+## Anti-Duplication System Analysis
+
+This section analyzes the likely architecture of the anti-dupe system and potential bypass vectors.
+
+### 1. Reasonable Assumptions About Anti-Dupe Mechanism
+
+Based on visible code patterns and common Roblox game architecture:
+
+#### 1.1 UUID-Based Item Identification
+
+Evidence from codebase:
+```lua
+-- From Asserts909.luau lines 1665-1692
+v72.UUIDStripped = function(v455)
+    -- Validates 32-character hex string (UUID without dashes)
+    if string.len(v455) ~= 32 then error("Length32", 2) end
+    -- Validates lowercase hex characters only
+end
+
+v72.UUID = function(v459)
+    -- Validates standard 36-character UUID format
+    if string.len(v459) ~= 36 then error("Length36", 2) end
+    if not v459:find("^%x%x%x%x%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%x%x%x%x%x%x%x%x$") then
+        error("UUID", 2)
+    end
+end
+```
+
+**Assumption**: Each brainrot has a unique UUID generated via `HttpService:GenerateGUID()` at creation time:
+```lua
+-- From LaserGunsShared664.luau - Example of GUID generation pattern
+Id = l_HttpService_0:GenerateGUID(false):lower():gsub("%-", "")
+```
+
+#### 1.2 Brainrot Data Structure (Inferred)
+
+```lua
+Brainrot = {
+    UUID = "abc123def456...",      -- 32-char unique identifier
+    Index = "Tralalero",           -- Brainrot type
+    Mutation = "Rainbow",          -- Optional mutation
+    Traits = {"10B", "Lightning"}, -- Array of traits
+    CreatedAt = timestamp,         -- Creation timestamp
+    OriginServer = jobId,          -- Server where created (likely)
+    OwnerHistory = {userId1, ...}, -- Ownership chain (likely)
+    LastTransferTime = timestamp   -- Anti-rapid-trade check (likely)
+}
+```
+
+#### 1.3 Likely Anti-Dupe Detection Points
+
+| Detection Point | Mechanism | Timing |
+|-----------------|-----------|--------|
+| **On Creation** | UUID uniqueness check against global registry | Immediate |
+| **On Player Join** | Compare loaded UUIDs against MemoryStore/global registry | During data load |
+| **On Transfer** | Verify sender actually owns UUID, update global registry atomically | During duel resolution |
+| **Periodic Scan** | Background job scanning for duplicate UUIDs across DataStore shards | Every N minutes |
+| **On Trade/Sell** | Re-validate UUID ownership before transaction | Pre-transaction |
+
+### 2. When Duplication Is Detected
+
+Based on architectural patterns, detection likely occurs at:
+
+#### 2.1 Player Join Reconciliation (PRIMARY)
+
+```lua
+-- Hypothetical server-side logic
+function OnPlayerJoin(player)
+    local playerData = DataStore:GetAsync(player.UserId)
+    
+    for podiumIndex, brainrot in playerData.AnimalPodiums do
+        if brainrot and brainrot.UUID then
+            -- Check against global UUID registry
+            local existingOwner = MemoryStore:GetAsync("UUID:" .. brainrot.UUID)
+            
+            if existingOwner and existingOwner.ownerId ~= player.UserId then
+                -- DUPLICATE DETECTED
+                -- Delete this copy, keep the one in registry
+                playerData.AnimalPodiums[podiumIndex] = nil
+                LogDupeAttempt(player, brainrot)
+            else
+                -- Register/refresh ownership
+                MemoryStore:SetAsync("UUID:" .. brainrot.UUID, {
+                    ownerId = player.UserId,
+                    serverId = game.JobId,
+                    timestamp = os.time()
+                }, 86400)  -- 24-hour TTL
+            end
+        end
+    end
+end
+```
+
+#### 2.2 Duel Resolution (SECONDARY)
+
+```lua
+-- Hypothetical duel completion logic
+function ResolveDuel(winnerId, loserId, brainrotUUID)
+    -- Atomic ownership transfer using UpdateAsync
+    local success = MemoryStore:UpdateAsync("UUID:" .. brainrotUUID, function(current)
+        if not current then
+            return nil  -- UUID not registered, abort
+        end
+        
+        if current.ownerId ~= loserId then
+            return nil  -- Loser doesn't own this UUID, abort (possible dupe)
+        end
+        
+        -- Transfer ownership
+        return {
+            ownerId = winnerId,
+            serverId = game.JobId,
+            timestamp = os.time(),
+            previousOwner = loserId
+        }
+    end)
+    
+    return success
+end
+```
+
+### 3. How The System Decides Which Copy To Delete
+
+#### 3.1 Registry-Based Authority
+
+The system likely uses a **"first to register wins"** model:
+
+```
+UUID Registry (MemoryStore HashMap)
+├── Key: "UUID:abc123def456"
+│   └── Value: {ownerId: 12345, serverId: "job-xyz", timestamp: 1705678900}
+├── Key: "UUID:def789ghi012"  
+│   └── Value: {ownerId: 67890, serverId: "job-abc", timestamp: 1705678800}
+└── ...
+```
+
+**Deletion Logic:**
+1. When Player A joins S2, their brainrot UUID is checked against registry
+2. If registry says UUID belongs to someone else → **DELETE this copy**
+3. If registry says UUID belongs to Player A → Keep, refresh timestamp
+4. If UUID not in registry → Register it (legacy migration or new creation)
+
+#### 3.2 Timestamp Tiebreaker
+
+When both copies claim validity:
+```lua
+-- Hypothetical conflict resolution
+if registryEntry.timestamp > localData.LastSaveTime then
+    -- Registry is more recent, delete local copy
+    deleteLocalCopy()
+elseif localData.LastSaveTime > registryEntry.timestamp then
+    -- Local is more recent (edge case), update registry
+    updateRegistry(localData)
+else
+    -- Exact tie: prefer the one currently in registry (stability)
+    deleteLocalCopy()
+end
+```
+
+#### 3.3 Server JobId Verification
+
+```lua
+-- If UUID claims to be active on another server, verify that server exists
+if registryEntry.serverId and registryEntry.serverId ~= game.JobId then
+    local serverAlive = MessagingService:PublishAsync("PingServer", registryEntry.serverId)
+    if not serverAlive then
+        -- Original server is dead, we can claim this UUID
+        takeOwnership()
+    else
+        -- Original server is alive, this is a duplicate
+        deleteDuplicate()
+    end
+end
+```
+
+### 4. Exploit Bypass Vectors
+
+#### 4.1 Race Condition Window Attack
+
+**The Core Vulnerability:**
+```
+Timeline:
+T0: Duel starts, UUID locked in S1 memory only (not MemoryStore)
+T1: S1 freezes before writing lock to MemoryStore
+T2: A joins S2, loads data - UUID NOT in MemoryStore registry
+T3: S2 registers UUID to A (appears legitimate)
+T4: S1 recovers, also registers UUID to B (overwrites or fails)
+T5: Both have valid registry claims at different times
+```
+
+**Attack Tools:**
+- **Synapse X / Script-Ware**: Inject code to simulate network lag
+- **Clumsy / WinDivert**: Drop/delay specific packets
+- **Charles Proxy**: Intercept and hold network requests
+- **VM Freeze**: Suspend VM at precise moment
+
+#### 4.2 Forced Disconnect Timing
+
+**Exploit Flow:**
+1. Attacker A initiates duel with accomplice B
+2. A contributes high-value brainrot
+3. At exact moment of duel acceptance, A force-disconnects
+4. A immediately rejoins on S2 before S1 processes disconnect
+5. S1 may timeout and award B the brainrot
+6. S2 loaded A's data before the transfer completed
+
+**Tools:**
+```lua
+-- Client-side disconnect simulation (requires exploit)
+game:GetService("NetworkClient"):Disconnect()
+-- Or kill Roblox process and relaunch
+```
+
+#### 4.3 DataStore Replication Lag Abuse
+
+**Roblox DataStore Limitation:**
+- `SetAsync` is eventually consistent
+- Writes can take 1-5 seconds to propagate
+- `GetAsync` may return stale data during this window
+
+**Attack:**
+```
+T0: Duel resolves on S1, DataStore write initiated
+T1: Before write completes, A joins S2
+T2: S2's GetAsync returns OLD data (before transfer)
+T3: S1's write completes (A no longer owns brainrot)
+T4: S2 has old data showing A still owns brainrot
+T5: S2's eventual save writes old data BACK, overwriting S1's transfer
+```
+
+#### 4.4 MemoryStore Expiration Attack
+
+**If anti-dupe uses MemoryStore with TTL:**
+```lua
+MemoryStore:SetAsync("UUID:xxx", ownerData, 3600)  -- 1 hour TTL
+```
+
+**Attack:**
+1. Win a brainrot in duel
+2. Wait until MemoryStore entry expires (1 hour)
+3. Original owner rejoins, their data loads
+4. UUID no longer in MemoryStore → considered "unregistered"
+5. Both players now have "valid" brainrots
+
+#### 4.5 Multi-Account Session Overlap
+
+**Attack Setup:**
+- Account A on PC (Server S1)
+- Account A on Mobile (Server S2) - same Roblox account
+
+**Roblox Behavior:**
+- When A joins S2, S1 receives kick signal
+- But network latency means A exists briefly on both
+
+**Exploit:**
+1. A on S1 enters duel, brainrot locked
+2. A's mobile joins S2 at same time
+3. S2 loads A's data while S1 still processing duel
+4. Race condition in anti-dupe registry
+
+### 5. Classes of Exploit Tools and Bypass Methods
+
+| Tool Category | Examples | Bypass Mechanism |
+|---------------|----------|------------------|
+| **Network Manipulation** | Clumsy, WinDivert, NetLimiter | Delay/drop packets to create timing windows |
+| **Process Control** | Process Hacker, Cheat Engine | Freeze Roblox process at critical moments |
+| **Script Executors** | Synapse X, Script-Ware, Krnl | Inject code to manipulate client state |
+| **Proxy Interceptors** | Charles, Fiddler, mitmproxy | Hold/replay/modify network traffic |
+| **VM Software** | VMware, VirtualBox | Snapshot/restore VM state, pause execution |
+| **Multi-Instance** | Roblox Account Manager | Run multiple accounts simultaneously |
+| **Timing Tools** | AutoHotkey, macro software | Precise timing of disconnect/reconnect |
+
+### 6. Defensive Recommendations
+
+#### 6.1 Immediate Fixes
+
+```lua
+-- Use MemoryStore for ALL duel state (not just local Synchronizer)
+local function StartDuel(player1, player2, brainrot1UUID, brainrot2UUID)
+    -- ATOMIC lock both brainrots BEFORE duel starts
+    local lock1 = MemoryStore:UpdateAsync("UUID:" .. brainrot1UUID, function(current)
+        if current and current.ownerId ~= player1.UserId then
+            return nil  -- Not owner, abort
+        end
+        if current and current.inDuel then
+            return nil  -- Already in duel, abort
+        end
+        return {
+            ownerId = player1.UserId,
+            inDuel = true,
+            duelId = duelId,
+            duelServer = game.JobId,
+            lockTime = os.time()
+        }
+    end)
+    
+    if not lock1 then
+        -- Failed to lock, abort duel
+        return false, "Brainrot is unavailable"
+    end
+    
+    -- Same for brainrot2
+    -- ...
+end
+```
+
+#### 6.2 Server Join Validation
+
+```lua
+-- On every server join, validate ALL brainrots against MemoryStore
+game.Players.PlayerAdded:Connect(function(player)
+    local data = LoadPlayerData(player)
+    
+    for i, brainrot in data.AnimalPodiums do
+        if brainrot and brainrot.UUID then
+            local registryEntry = MemoryStore:GetAsync("UUID:" .. brainrot.UUID)
+            
+            if registryEntry then
+                if registryEntry.ownerId ~= player.UserId then
+                    -- DUPLICATE - Delete this one
+                    data.AnimalPodiums[i] = nil
+                    Analytics:Track("DupeDeleted", player.UserId, brainrot.UUID)
+                    
+                elseif registryEntry.inDuel and registryEntry.duelServer ~= game.JobId then
+                    -- Brainrot is in a duel on another server
+                    -- Either block or force reconnect to duel server
+                    TeleportToServer(player, registryEntry.duelServer)
+                end
+            end
+        end
+    end
+end)
+```
+
+#### 6.3 Atomic Duel Resolution
+
+```lua
+-- Use DataStore:UpdateAsync for atomic ownership transfer
+function ResolveDuelAtomic(winnerId, loserId, brainrotUUID)
+    -- Step 1: Atomic MemoryStore update
+    local memSuccess = MemoryStore:UpdateAsync("UUID:" .. brainrotUUID, function(current)
+        if not current or current.ownerId ~= loserId then
+            return nil  -- Invalid state, abort
+        end
+        return {
+            ownerId = winnerId,
+            inDuel = false,
+            transferTime = os.time(),
+            previousOwner = loserId
+        }
+    end)
+    
+    if not memSuccess then
+        return false, "Transfer failed - ownership mismatch"
+    end
+    
+    -- Step 2: Update both players' DataStores atomically
+    -- Remove from loser
+    DataStore:UpdateAsync("Player:" .. loserId, function(data)
+        for i, brainrot in data.AnimalPodiums do
+            if brainrot and brainrot.UUID == brainrotUUID then
+                data.AnimalPodiums[i] = nil
+                break
+            end
+        end
+        return data
+    end)
+    
+    -- Add to winner
+    DataStore:UpdateAsync("Player:" .. winnerId, function(data)
+        table.insert(data.AnimalPodiums, {
+            UUID = brainrotUUID,
+            -- other brainrot data
+        })
+        return data
+    end)
+    
+    return true
+end
+```
+
+### 7. Summary: Anti-Dupe Bypass Likelihood
+
+| Bypass Vector | Difficulty | Success Rate | Detection Risk |
+|---------------|------------|--------------|----------------|
+| Server freeze timing | Hard | Medium | Low if done once |
+| Force disconnect race | Medium | Medium-High | Medium |
+| DataStore replication lag | Easy | Low-Medium | High |
+| MemoryStore expiration | Very Easy | Depends on TTL | Low |
+| Multi-account overlap | Easy | Medium | Medium |
+| Network packet manipulation | Medium | High | Low |
+
+**Overall Assessment**: If the anti-dupe system relies primarily on **player join reconciliation** without **real-time MemoryStore locks during duels**, the system is vulnerable to timing-based duplication exploits. The ~60 second profile loading window mentioned in the scenario is particularly dangerous as it creates a substantial race condition window.
