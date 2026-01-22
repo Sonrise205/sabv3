@@ -415,12 +415,12 @@ async def show_templates(ctx):
     await ctx.send(embed=embed)
 
 
-@bot.command(name="help")
-async def help_command(ctx):
+@bot.command(name="commands")
+async def commands_help(ctx):
     """Show help for all commands."""
     embed = discord.Embed(
         title="📚 Bot Commands",
-        description="Order & Chat Automation for Eldorado.gg",
+        description="Order & Chat Automation for Eldorado.gg\nUse `.commands` to see this again.",
         color=0x3498db
     )
     
