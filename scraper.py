@@ -5,6 +5,10 @@ import utils
 
 # Track last conversation for new chat detection
 last_top_chat_signature = None
+# Track recently notified customers to avoid duplicates (name -> timestamp)
+recently_notified = {}
+# Cooldown in seconds before same customer can trigger another notification
+NOTIFICATION_COOLDOWN = 120  # 2 minutes
 
 
 def scrape_chats_list():
@@ -270,18 +274,32 @@ def check_new_top_conversation():
             const time = a.querySelector(".ConversationListItem__timestamp span[aria-hidden='true']")?.innerText?.trim() || "";
             const msg = a.querySelector(".ConversationListItem__message")?.innerText?.trim() || "No message";
             
-            // Check if the message is from you (has "You:" prefix or similar indicators)
             const msgElement = a.querySelector(".ConversationListItem__message");
             let isFromYou = false;
+            let isSystemMessage = false;
+            
             if (msgElement) {
                 const fullText = msgElement.innerText || "";
+                
                 // Check for "You:" prefix which indicates your message
                 if (fullText.startsWith("You:") || fullText.startsWith("You :")) {
                     isFromYou = true;
                 }
+                
+                // Check for system messages (Order Created, Order Delivered, etc.)
+                const lowerText = fullText.toLowerCase();
+                if (lowerText.includes("order created") || 
+                    lowerText.includes("order delivered") ||
+                    lowerText.includes("received goods or services") ||
+                    lowerText.includes("mark this order") ||
+                    lowerText.includes("trustpilot") ||
+                    lowerText.includes("leave feedback") ||
+                    fullText.includes("eldorado.gg/order/")) {
+                    isSystemMessage = true;
+                }
             }
             
-            return { name, time, message: msg, isFromYou };
+            return { name, time, message: msg, isFromYou, isSystemMessage };
         }
         """
         top_chat = frame.evaluate(script)
@@ -301,6 +319,32 @@ def check_new_top_conversation():
             if top_chat.get('isFromYou', False):
                 utils.consoleprint(f"New message from YOU detected (ignoring): {current_signature}")
                 return None
+            
+            # Only notify if message is not a SYSTEM message
+            if top_chat.get('isSystemMessage', False):
+                utils.consoleprint(f"System message detected (ignoring): {current_signature}")
+                return None
+            
+            # Check cooldown - avoid duplicate notifications for same customer
+            import time
+            customer_name = top_chat['name']
+            current_time = time.time()
+            
+            if customer_name in recently_notified:
+                last_notified = recently_notified[customer_name]
+                time_since = current_time - last_notified
+                if time_since < NOTIFICATION_COOLDOWN:
+                    utils.consoleprint(f"Cooldown active for {customer_name} ({int(NOTIFICATION_COOLDOWN - time_since)}s remaining) - skipping duplicate")
+                    return None
+            
+            # Update cooldown tracker
+            recently_notified[customer_name] = current_time
+            
+            # Clean up old entries (older than 10 minutes)
+            cutoff = current_time - 600
+            for name in list(recently_notified.keys()):
+                if recently_notified[name] < cutoff:
+                    del recently_notified[name]
             
             utils.consoleprint(f"New Customer Message! {current_signature}")
             return top_chat
