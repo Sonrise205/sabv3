@@ -5,10 +5,8 @@ import utils
 
 # Track last conversation for new chat detection
 last_top_chat_signature = None
-# Track recently notified customers to avoid duplicates (name -> timestamp)
-recently_notified = {}
-# Cooldown in seconds before same customer can trigger another notification
-NOTIFICATION_COOLDOWN = 120  # 2 minutes
+# Track notified ORDER IDs to prevent duplicate notifications
+notified_order_ids = set()
 
 
 def scrape_chats_list():
@@ -129,7 +127,26 @@ def scrape_current_order_page():
             
             details_script = """
             () => {
-                // 1. Helper to get values from the Details Card
+                // 1. Get Item/Offer name from header
+                let itemName = "N/A";
+                const offerTitle = document.querySelector("eld-order-header .offer-title");
+                if (offerTitle) {
+                    itemName = offerTitle.innerText.trim();
+                }
+                
+                // 2. Get Order ID from header
+                let orderId = "N/A";
+                const orderHeader = document.querySelector("eld-order-header");
+                if (orderHeader) {
+                    const orderIdSpan = orderHeader.querySelector(".order-id span");
+                    if (orderIdSpan) {
+                        const text = orderIdSpan.innerText || "";
+                        const match = text.match(/([a-f0-9-]{36})/i);
+                        if (match) orderId = match[1];
+                    }
+                }
+                
+                // 3. Helper to get values from the Details Card
                 const card = document.querySelector("eld-seller-order-details-card");
                 const getVal = (label) => {
                     if (!card) return "N/A";
@@ -144,15 +161,14 @@ def scrape_current_order_page():
                 const quantity = getVal("Quantity");
                 const buyer = getVal("Buyer");
                 
-                // 2. Get Status from Order Header
+                // 4. Get Status from Order Header
                 let status = "Unknown";
-                const statusHeader = document.querySelector("eld-order-header");
-                if (statusHeader) {
-                    const chip = statusHeader.querySelector("eld-chip");
+                if (orderHeader) {
+                    const chip = orderHeader.querySelector("eld-chip");
                     if (chip) status = chip.innerText.trim();
                 }
 
-                // 3. Get Earnings
+                // 5. Get Earnings
                 let earnings = "N/A";
                 const paymentDiv = document.querySelector(".order-seller-payment");
                 if (paymentDiv) {
@@ -164,7 +180,7 @@ def scrape_current_order_page():
                     }
                 }
 
-                // 4. Get Delivery Time
+                // 6. Get Delivery Time
                 let deliveryTime = "N/A";
                 const timerDiv = document.querySelector(".delivery-time-container");
                 if (timerDiv) {
@@ -177,7 +193,7 @@ def scrape_current_order_page():
                     if (parts.length > 0) deliveryTime = parts.join(" ");
                 }
 
-                return { game, quantity, buyer, earnings, deliveryTime, status };
+                return { itemName, orderId, game, quantity, buyer, earnings, deliveryTime, status };
             }
             """
             data = page.evaluate(details_script)
@@ -277,6 +293,7 @@ def check_new_top_conversation():
             const msgElement = a.querySelector(".ConversationListItem__message");
             let isFromYou = false;
             let isSystemMessage = false;
+            let orderId = null;
             
             if (msgElement) {
                 const fullText = msgElement.innerText || "";
@@ -297,9 +314,15 @@ def check_new_top_conversation():
                     fullText.includes("eldorado.gg/order/")) {
                     isSystemMessage = true;
                 }
+                
+                // Extract order ID from URL if present
+                const orderMatch = fullText.match(/eldorado\\.gg\\/order\\/([a-f0-9-]+)/i);
+                if (orderMatch) {
+                    orderId = orderMatch[1];
+                }
             }
             
-            return { name, time, message: msg, isFromYou, isSystemMessage };
+            return { name, time, message: msg, isFromYou, isSystemMessage, orderId };
         }
         """
         top_chat = frame.evaluate(script)
@@ -320,32 +343,31 @@ def check_new_top_conversation():
                 utils.consoleprint(f"New message from YOU detected (ignoring): {current_signature}")
                 return None
             
-            # Only notify if message is not a SYSTEM message
+            # Check if this is a SYSTEM message with an order ID
             if top_chat.get('isSystemMessage', False):
-                utils.consoleprint(f"System message detected (ignoring): {current_signature}")
-                return None
-            
-            # Check cooldown - avoid duplicate notifications for same customer
-            import time
-            customer_name = top_chat['name']
-            current_time = time.time()
-            
-            if customer_name in recently_notified:
-                last_notified = recently_notified[customer_name]
-                time_since = current_time - last_notified
-                if time_since < NOTIFICATION_COOLDOWN:
-                    utils.consoleprint(f"Cooldown active for {customer_name} ({int(NOTIFICATION_COOLDOWN - time_since)}s remaining) - skipping duplicate")
+                order_id = top_chat.get('orderId')
+                
+                if order_id:
+                    # Check if we've already notified for this order
+                    if order_id in notified_order_ids:
+                        utils.consoleprint(f"Order {order_id[:8]}... already notified - skipping duplicate")
+                        return None
+                    
+                    # New order - add to notified set
+                    notified_order_ids.add(order_id)
+                    utils.consoleprint(f"New Order detected: {order_id[:8]}...")
+                    
+                    # Limit set size (keep last 100 orders)
+                    if len(notified_order_ids) > 100:
+                        notified_order_ids.pop()
+                    
+                    return top_chat
+                else:
+                    # System message without order ID (like "Order Delivered") - skip
+                    utils.consoleprint(f"System message without order ID (ignoring): {current_signature[:50]}...")
                     return None
             
-            # Update cooldown tracker
-            recently_notified[customer_name] = current_time
-            
-            # Clean up old entries (older than 10 minutes)
-            cutoff = current_time - 600
-            for name in list(recently_notified.keys()):
-                if recently_notified[name] < cutoff:
-                    del recently_notified[name]
-            
+            # Regular customer message - always notify
             utils.consoleprint(f"New Customer Message! {current_signature}")
             return top_chat
             

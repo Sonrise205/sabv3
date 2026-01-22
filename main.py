@@ -137,6 +137,11 @@ def create_order_embed(info: dict, username: str, url: str, view: ui.OrderMonito
         timestamp=datetime.utcnow()
     )
     
+    # Item name at the top (if available)
+    item_name = info.get('itemName', 'N/A')
+    if item_name and item_name != 'N/A':
+        embed.add_field(name="🏷️ Item", value=f"**{item_name}**", inline=False)
+    
     # Status bar with visual indicator
     status_bar = create_status_bar(status)
     embed.add_field(name="📊 Status", value=f"{status_bar}\n**{status}**", inline=False)
