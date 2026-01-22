@@ -150,6 +150,228 @@ def format_chat_for_embed(lines: list, max_lines: int = 15) -> str:
     
     return "\n".join(formatted_lines)
 
+
+# =============================================================================
+# ANSI COLOR CODES FOR DISCORD
+# =============================================================================
+
+# ANSI escape codes for Discord ```ansi blocks
+ANSI = {
+    "reset": "\u001b[0m",
+    "bold": "\u001b[1m",
+    "underline": "\u001b[4m",
+    # Foreground colors
+    "gray": "\u001b[0;30m",
+    "red": "\u001b[0;31m",
+    "green": "\u001b[0;32m",
+    "yellow": "\u001b[0;33m",
+    "blue": "\u001b[0;34m",
+    "pink": "\u001b[0;35m",
+    "cyan": "\u001b[0;36m",
+    "white": "\u001b[0;37m",
+    # Bold foreground
+    "bold_gray": "\u001b[1;30m",
+    "bold_red": "\u001b[1;31m",
+    "bold_green": "\u001b[1;32m",
+    "bold_yellow": "\u001b[1;33m",
+    "bold_blue": "\u001b[1;34m",
+    "bold_pink": "\u001b[1;35m",
+    "bold_cyan": "\u001b[1;36m",
+    "bold_white": "\u001b[1;37m",
+    # Backgrounds
+    "bg_gray": "\u001b[40m",
+    "bg_red": "\u001b[41m",
+    "bg_green": "\u001b[42m",
+    "bg_yellow": "\u001b[43m",
+    "bg_blue": "\u001b[44m",
+    "bg_pink": "\u001b[45m",
+    "bg_cyan": "\u001b[46m",
+    "bg_white": "\u001b[47m",
+}
+
+
+def format_chat_ansi(lines: list, max_lines: int = 12) -> str:
+    """
+    Format chat lines with ANSI color codes for Discord.
+    
+    Args:
+        lines: List of chat lines (from parse_html_to_text)
+        max_lines: Maximum lines to show
+        
+    Returns:
+        ANSI formatted string ready for ```ansi code block
+    """
+    if not lines:
+        return "No chat history found."
+    
+    recent_lines = lines[-max_lines:]
+    formatted = []
+    last_sender = None
+    
+    for line in recent_lines:
+        # Parse the line to extract components
+        formatted_line = _format_single_line_ansi(line, last_sender)
+        formatted.append(formatted_line["text"])
+        if formatted_line["sender"]:
+            last_sender = formatted_line["sender"]
+    
+    return "\n".join(formatted)
+
+
+def _format_single_line_ansi(line: str, last_sender: str = None) -> dict:
+    """Format a single chat line with ANSI colors."""
+    R = ANSI["reset"]
+    
+    # System message
+    if line.startswith("[SYSTEM]:") or "[SYSTEM]" in line:
+        # Clean up system message
+        clean_msg = line.replace("[SYSTEM]:", "").replace("[SYSTEM]", "").strip()
+        
+        # Shorten common system messages
+        if "Order Created" in clean_msg:
+            clean_msg = "Order Created"
+        elif "Order Delivered" in clean_msg:
+            clean_msg = "Order Delivered"
+        elif "received goods" in clean_msg.lower():
+            clean_msg = "Order Delivered - Please confirm"
+        
+        # Truncate URLs
+        if "http" in clean_msg:
+            import re
+            clean_msg = re.sub(r'https?://\S+', '[link]', clean_msg)
+        
+        text = f"{ANSI['bold_red']}━━ {clean_msg} ━━{R}"
+        return {"text": text, "sender": None}
+    
+    # Parse timestamp and message
+    import re
+    
+    # Pattern: [date at time] Sender: message
+    # or just: Sender: message
+    timestamp = ""
+    sender = ""
+    message = line
+    
+    # Try to extract timestamp
+    time_match = re.search(r'\[([^\]]+)\]', line)
+    if time_match:
+        full_time = time_match.group(1)
+        # Extract just HH:MM
+        time_only = re.search(r'(\d{1,2}:\d{2})', full_time)
+        if time_only:
+            timestamp = time_only.group(1)
+        # Remove timestamp from message
+        message = line[time_match.end():].strip()
+    
+    # Extract sender
+    if message.startswith("Me:"):
+        sender = "Me"
+        message = message[3:].strip()
+    elif message.startswith("Them:"):
+        sender = "Them"
+        message = message[5:].strip()
+    elif ": " in message:
+        parts = message.split(": ", 1)
+        if parts[0] in ["Me", "Them", ">>", last_sender or ""]:
+            sender = parts[0]
+            message = parts[1] if len(parts) > 1 else ""
+    
+    # Build formatted line
+    if sender == "Me":
+        time_part = f"{ANSI['gray']}{timestamp}{R} " if timestamp else ""
+        text = f"{time_part}{ANSI['bold_blue']}Me:{R} {ANSI['blue']}{message}{R}"
+    elif sender == "Them":
+        time_part = f"{ANSI['gray']}{timestamp}{R} " if timestamp else ""
+        text = f"{time_part}{ANSI['bold_white']}Them:{R} {ANSI['white']}{message}{R}"
+    else:
+        # Unknown format, just display as-is
+        text = f"{ANSI['gray']}{line}{R}"
+    
+    return {"text": text, "sender": sender if sender in ["Me", "Them"] else last_sender}
+
+
+def format_chat_ansi_grouped(lines: list, max_lines: int = 15) -> str:
+    """
+    Format chat with ANSI colors, grouping consecutive messages from same sender.
+    
+    Args:
+        lines: List of chat lines
+        max_lines: Maximum lines to show
+        
+    Returns:
+        ANSI formatted string
+    """
+    if not lines:
+        return "No chat history found."
+    
+    recent_lines = lines[-max_lines:]
+    formatted = []
+    last_sender = None
+    last_time_minute = None
+    
+    R = ANSI["reset"]
+    
+    for line in recent_lines:
+        import re
+        
+        # System message
+        if "[SYSTEM]" in line:
+            clean_msg = line.replace("[SYSTEM]:", "").replace("[SYSTEM]", "").strip()
+            
+            # Shorten
+            if "Order Created" in clean_msg:
+                formatted.append(f"\n{ANSI['bold_yellow']}━━━ 📋 Order Created ━━━{R}\n")
+            elif "Order Delivered" in clean_msg or "received goods" in clean_msg.lower():
+                formatted.append(f"\n{ANSI['bold_green']}━━━ ✅ Order Delivered ━━━{R}\n")
+            else:
+                # Truncate URLs and limit length
+                clean_msg = re.sub(r'https?://\S+', '', clean_msg)
+                clean_msg = clean_msg[:60] + "..." if len(clean_msg) > 60 else clean_msg
+                formatted.append(f"{ANSI['red']}⚠ {clean_msg}{R}")
+            
+            last_sender = None
+            continue
+        
+        # Parse timestamp
+        timestamp = ""
+        time_match = re.search(r'\[([^\]]+)\]', line)
+        message = line
+        if time_match:
+            full_time = time_match.group(1)
+            time_only = re.search(r'(\d{1,2}:\d{2})', full_time)
+            if time_only:
+                timestamp = time_only.group(1)
+            message = line[time_match.end():].strip()
+        
+        # Parse sender
+        sender = None
+        if message.startswith("Me:"):
+            sender = "Me"
+            message = message[3:].strip()
+        elif message.startswith("Them:"):
+            sender = "Them"
+            message = message[5:].strip()
+        
+        # Format based on sender
+        if sender == "Me":
+            if last_sender != "Me":
+                # New sender block
+                time_str = f" {ANSI['gray']}({timestamp}){R}" if timestamp else ""
+                formatted.append(f"{ANSI['bold_blue']}▶ You{time_str}{R}")
+            formatted.append(f"  {ANSI['blue']}{message}{R}")
+        elif sender == "Them":
+            if last_sender != "Them":
+                # New sender block  
+                time_str = f" {ANSI['gray']}({timestamp}){R}" if timestamp else ""
+                formatted.append(f"{ANSI['bold_white']}◀ Customer{time_str}{R}")
+            formatted.append(f"  {ANSI['white']}{message}{R}")
+        else:
+            formatted.append(f"{ANSI['gray']}{message}{R}")
+        
+        last_sender = sender
+    
+    return "\n".join(formatted)
+
 def paginate_chat(lines: list, page: int = 0, per_page: int = 10) -> dict:
     """
     Paginate chat lines for navigation.

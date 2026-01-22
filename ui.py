@@ -401,27 +401,19 @@ class OrderMonitorView(View):
         self.chat_lines = lines or []
 
     def get_paginated_chat(self) -> str:
-        """Get the current page of chat as formatted text."""
+        """Get the current page of chat as ANSI formatted text."""
         if not self.chat_lines:
             return "No chat history found."
         
         paginated = utils.paginate_chat(self.chat_lines, self.chat_page, self.per_page)
         
-        formatted_lines = []
-        for line in paginated["lines"]:
-            if line.startswith("[SYSTEM]:"):
-                formatted_lines.append(f"🔴 {line}")
-            elif "Me:" in line:
-                formatted_lines.append(f"🔵 {line}")
-            elif "Them:" in line:
-                formatted_lines.append(f"⚪ {line}")
-            else:
-                formatted_lines.append(line)
+        # Use ANSI grouped formatting
+        ansi_text = utils.format_chat_ansi_grouped(paginated["lines"], 15)
         
         # Add page indicator
-        page_info = f"\n\n📄 Page {paginated['page'] + 1}/{paginated['total_pages']}"
+        page_info = f"\n\n{utils.ANSI['gray']}📄 Page {paginated['page'] + 1}/{paginated['total_pages']}{utils.ANSI['reset']}"
         
-        return "\n".join(formatted_lines) + page_info
+        return ansi_text + page_info
 
 
 # =============================================================================
@@ -429,7 +421,7 @@ class OrderMonitorView(View):
 # =============================================================================
 
 class ChatView(View):
-    """Simple view for browsing chat history."""
+    """Simple view for browsing chat history with ANSI colors."""
     
     def __init__(self, ctx, username, chat_lines):
         super().__init__(timeout=300)  # 5 minute timeout
@@ -437,24 +429,27 @@ class ChatView(View):
         self.username = username
         self.chat_lines = chat_lines or []
         self.page = 0
-        self.per_page = 15
+        self.per_page = 12
     
     def get_embed(self) -> discord.Embed:
-        """Generate embed for current page."""
+        """Generate embed for current page with ANSI colored chat."""
         paginated = utils.paginate_chat(self.chat_lines, self.page, self.per_page)
         
-        formatted_lines = []
-        for line in paginated["lines"]:
-            if line.startswith("[SYSTEM]:"):
-                formatted_lines.append(f"🔴 {line}")
-            elif "Me:" in line:
-                formatted_lines.append(f"🔵 {line}")
-            elif "Them:" in line:
-                formatted_lines.append(f"⚪ {line}")
-            else:
-                formatted_lines.append(line)
-        
-        description = "\n".join(formatted_lines) if formatted_lines else "No messages found."
+        # Use ANSI formatted chat
+        if paginated["lines"]:
+            ansi_text = utils.format_chat_ansi_grouped(paginated["lines"], 15)
+            
+            # Add page info
+            if paginated["total_pages"] > 1:
+                ansi_text += f"\n\n{utils.ANSI['gray']}📄 Page {paginated['page'] + 1}/{paginated['total_pages']}{utils.ANSI['reset']}"
+            
+            # Limit length
+            if len(ansi_text) > 3800:
+                ansi_text = ansi_text[:3800] + f"\n{utils.ANSI['gray']}... truncated{utils.ANSI['reset']}"
+            
+            description = f"```ansi\n{ansi_text}\n```"
+        else:
+            description = "No messages found."
         
         embed = discord.Embed(
             title=f"💬 Chat with {self.username}",
@@ -462,10 +457,7 @@ class ChatView(View):
             color=0x2b2d31
         )
         
-        if paginated["total_pages"] > 1:
-            embed.set_footer(text=f"Page {paginated['page'] + 1}/{paginated['total_pages']} • {len(self.chat_lines)} messages")
-        else:
-            embed.set_footer(text=f"{len(self.chat_lines)} messages")
+        embed.set_footer(text=f"{len(self.chat_lines)} messages total")
         
         return embed
     

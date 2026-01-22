@@ -62,7 +62,7 @@ async def monitor_new_conversations():
 
 def create_order_embed(info: dict, username: str, url: str, view: ui.OrderMonitorView = None) -> discord.Embed:
     """
-    Create a beautifully formatted order embed.
+    Create a beautifully formatted order embed with ANSI colored chat.
     
     Args:
         info: Order data dictionary
@@ -77,15 +77,30 @@ def create_order_embed(info: dict, username: str, url: str, view: ui.OrderMonito
     color = utils.get_status_color(status)
     status_emoji = utils.get_status_emoji(status)
     
-    # Get chat text
+    # Get chat lines
+    chat_lines = []
     if view and view.chat_lines:
-        chat_text = view.get_paginated_chat()
+        chat_lines = view.chat_lines
+    elif info.get("chat_html"):
+        parsed = utils.parse_html_to_text(info["chat_html"])
+        chat_lines = parsed.get("clean", [])
+    
+    # Format chat with ANSI colors (grouped style)
+    if chat_lines:
+        # Get page of chat if paginated
+        if view:
+            page_data = utils.paginate_chat(chat_lines, view.chat_page, view.per_page)
+            page_lines = page_data["lines"]
+            page_info = f"Page {page_data['page'] + 1}/{page_data['total_pages']}"
+        else:
+            page_lines = chat_lines[-12:]
+            page_info = ""
+        
+        chat_text = utils.format_chat_ansi_grouped(page_lines, 15)
+        if page_info:
+            chat_text += f"\n\n{utils.ANSI['gray']}📄 {page_info}{utils.ANSI['reset']}"
     else:
         chat_text = "No chat history found."
-        if info.get("chat_html"):
-            parsed = utils.parse_html_to_text(info["chat_html"])
-            lines = parsed.get("clean", [])[-15:]
-            chat_text = utils.format_chat_for_embed(lines, 15)
     
     # Build embed
     embed = discord.Embed(
@@ -108,10 +123,12 @@ def create_order_embed(info: dict, username: str, url: str, view: ui.OrderMonito
     embed.add_field(name="⏳ Delivery Time", value=info.get('deliveryTime', 'N/A'), inline=True)
     embed.add_field(name="\u200b", value="\u200b", inline=True)  # Spacer
     
-    # Chat history section
-    if len(chat_text) > 1024:
-        chat_text = chat_text[:1021] + "..."
-    embed.add_field(name="💬 Chat History", value=f"```\n{chat_text}\n```", inline=False)
+    # Chat history with ANSI colors
+    # Limit to 1000 chars to stay within Discord limits
+    if len(chat_text) > 900:
+        chat_text = chat_text[:900] + f"\n{utils.ANSI['gray']}... truncated{utils.ANSI['reset']}"
+    
+    embed.add_field(name="💬 Chat History", value=f"```ansi\n{chat_text}\n```", inline=False)
     
     from datetime import datetime as dt
     embed.set_footer(text=f"Monitoring {username} • Last update: {dt.now().strftime('%H:%M:%S')}")
