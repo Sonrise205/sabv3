@@ -253,7 +253,7 @@ def send_message_logic(message_text: str):
 
 
 def check_new_top_conversation():
-    """Check if there's a new conversation at the top of the list."""
+    """Check if there's a new conversation at the top of the list from a CUSTOMER (not from you)."""
     global last_top_chat_signature
     try:
         # Don't check if on order page
@@ -269,7 +269,19 @@ def check_new_top_conversation():
             const name = a.querySelector(".ConversationListItem__conversation-name")?.innerText?.trim() || "Unknown";
             const time = a.querySelector(".ConversationListItem__timestamp span[aria-hidden='true']")?.innerText?.trim() || "";
             const msg = a.querySelector(".ConversationListItem__message")?.innerText?.trim() || "No message";
-            return { name, time, message: msg };
+            
+            // Check if the message is from you (has "You:" prefix or similar indicators)
+            const msgElement = a.querySelector(".ConversationListItem__message");
+            let isFromYou = false;
+            if (msgElement) {
+                const fullText = msgElement.innerText || "";
+                // Check for "You:" prefix which indicates your message
+                if (fullText.startsWith("You:") || fullText.startsWith("You :")) {
+                    isFromYou = true;
+                }
+            }
+            
+            return { name, time, message: msg, isFromYou };
         }
         """
         top_chat = frame.evaluate(script)
@@ -283,12 +295,19 @@ def check_new_top_conversation():
             return None
 
         if current_signature != last_top_chat_signature:
-            utils.consoleprint(f"New Chat Detected! {current_signature}")
             last_top_chat_signature = current_signature
+            
+            # Only notify if message is FROM CUSTOMER (not from you)
+            if top_chat.get('isFromYou', False):
+                utils.consoleprint(f"New message from YOU detected (ignoring): {current_signature}")
+                return None
+            
+            utils.consoleprint(f"New Customer Message! {current_signature}")
             return top_chat
             
         return None
-    except Exception:
+    except Exception as e:
+        utils.consoleprint(f"Error in check_new_top_conversation: {e}")
         return None
 
 

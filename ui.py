@@ -509,6 +509,34 @@ class ChatView(View):
 # CONVERSATION LIST VIEW - For .list command
 # =============================================================================
 
+class NewCustomerView(View):
+    """View with button to go to order page from new customer notification."""
+    
+    def __init__(self, username: str):
+        super().__init__(timeout=300)  # 5 minute timeout
+        self.username = username
+    
+    @discord.ui.button(label="📦 Go to Order Page", style=discord.ButtonStyle.success)
+    async def go_to_order(self, interaction: discord.Interaction, button: Button):
+        """Navigate to the order page for this customer."""
+        await interaction.response.defer()
+        
+        # Send instructions
+        await interaction.followup.send(
+            f"Use `.order {self.username}` to open the order page with full controls!",
+            ephemeral=True
+        )
+    
+    @discord.ui.button(label="💬 View Chat", style=discord.ButtonStyle.secondary)
+    async def view_chat(self, interaction: discord.Interaction, button: Button):
+        """View chat history."""
+        await interaction.response.defer()
+        await interaction.followup.send(
+            f"Use `.chat {self.username}` to view the chat history!",
+            ephemeral=True
+        )
+
+
 class ConversationListView(View):
     """View for browsing the conversation list."""
     

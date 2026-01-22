@@ -29,6 +29,13 @@ async def monitor_new_conversations():
     await bot.wait_until_ready()
     channel = bot.get_channel(config.CHANNEL_ID_NEW_SALE)
     
+    # Warn if channel not configured
+    if not channel:
+        utils.consoleprint(f"⚠️ WARNING: CHANNEL_ID_NEW_SALE not configured or invalid! New customer notifications disabled.")
+        utils.consoleprint(f"   Current value: {config.CHANNEL_ID_NEW_SALE}")
+    else:
+        utils.consoleprint(f"✅ New customer notifications will be sent to channel: {channel.name} ({channel.id})")
+    
     while not bot.is_closed():
         try:
             loop = asyncio.get_event_loop()
@@ -38,17 +45,37 @@ async def monitor_new_conversations():
             )
             
             if top_chat and channel:
+                # Extract username (remove the -XXXX suffix for display)
+                full_name = top_chat['name']
+                username = full_name.split('-')[0] if '-' in full_name else full_name
+                
+                # Format the message preview
+                message_preview = top_chat['message']
+                # Clean up system messages
+                if "Order Created" in message_preview:
+                    message_preview = "🆕 New Order Created!"
+                elif "Order Delivered" in message_preview:
+                    message_preview = "📦 Order Delivered notification"
+                else:
+                    message_preview = utils.truncate_text(message_preview, 150)
+                
+                # Create GREEN embed
                 embed = discord.Embed(
-                    title="🔔 New Customer Detected",
-                    description=f"**{top_chat['name']}** has messaged you!",
-                    color=0x2ecc71,
+                    title="🔔 New Customer Message!",
+                    description=f"**{full_name}** has sent you a message!",
+                    color=0x2ECC71,  # GREEN
                     timestamp=datetime.utcnow()
                 )
                 embed.add_field(name="⏰ Time", value=top_chat['time'] or "Just now", inline=True)
-                embed.add_field(name="💬 Message", value=utils.truncate_text(top_chat['message'], 200), inline=False)
-                embed.set_footer(text="Use .order <username> to manage this order")
+                embed.add_field(name="👤 Customer", value=full_name, inline=True)
+                embed.add_field(name="💬 Message", value=message_preview, inline=False)
+                embed.set_footer(text=f"Use .order {username} to manage this order")
                 
-                await channel.send(embed=embed)
+                # Create view with buttons
+                view = ui.NewCustomerView(username)
+                
+                await channel.send(embed=embed, view=view)
+                utils.consoleprint(f"📨 Notification sent for: {full_name}")
                 
         except Exception as e:
             utils.consoleprint(f"Monitor error: {e}")
