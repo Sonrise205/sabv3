@@ -225,15 +225,14 @@ class OrderMonitorView(View):
         self.chat_page = 0
         self.per_page = 10
         
-        # Add the select menus
+        # Add the select menu (only one to save space)
         self.add_item(QuickReplySelect())
-        self.add_item(MessageTemplateSelect())
 
     # -------------------------------------------------------------------------
-    # ROW 2: Quick Preset Buttons (Most Common Actions)
+    # ROW 1: Quick Message Buttons
     # -------------------------------------------------------------------------
     
-    @discord.ui.button(label="Greet", style=discord.ButtonStyle.secondary, emoji="👋", row=2)
+    @discord.ui.button(label="Greet", style=discord.ButtonStyle.secondary, emoji="👋", row=1)
     async def greet_btn(self, interaction: discord.Interaction, button: Button):
         """Send greeting message."""
         if interaction.user != self.ctx.author:
@@ -241,7 +240,7 @@ class OrderMonitorView(View):
             return
         await self._send_quick_message(interaction, "greeting")
 
-    @discord.ui.button(label="Username?", style=discord.ButtonStyle.secondary, emoji="🎮", row=2)
+    @discord.ui.button(label="Username?", style=discord.ButtonStyle.secondary, emoji="🎮", row=1)
     async def username_btn(self, interaction: discord.Interaction, button: Button):
         """Ask for username."""
         if interaction.user != self.ctx.author:
@@ -249,7 +248,7 @@ class OrderMonitorView(View):
             return
         await self._send_quick_message(interaction, "username")
 
-    @discord.ui.button(label="Confirm", style=discord.ButtonStyle.success, emoji="📦", row=2)
+    @discord.ui.button(label="Confirm", style=discord.ButtonStyle.primary, emoji="📦", row=1)
     async def confirm_btn(self, interaction: discord.Interaction, button: Button):
         """Confirm order received."""
         if interaction.user != self.ctx.author:
@@ -257,15 +256,7 @@ class OrderMonitorView(View):
             return
         await self._send_quick_message(interaction, "confirm")
 
-    @discord.ui.button(label="Delivering", style=discord.ButtonStyle.success, emoji="🚚", row=2)
-    async def delivering_btn(self, interaction: discord.Interaction, button: Button):
-        """Notify delivering now."""
-        if interaction.user != self.ctx.author:
-            await interaction.response.send_message("Only the command sender can use this.", ephemeral=True)
-            return
-        await self._send_quick_message(interaction, "delivering")
-
-    @discord.ui.button(label="Done", style=discord.ButtonStyle.success, emoji="✅", row=2)
+    @discord.ui.button(label="Done", style=discord.ButtonStyle.success, emoji="✅", row=1)
     async def done_btn(self, interaction: discord.Interaction, button: Button):
         """Confirm delivery complete."""
         if interaction.user != self.ctx.author:
@@ -273,17 +264,86 @@ class OrderMonitorView(View):
             return
         await self._send_quick_message(interaction, "done")
 
-    # -------------------------------------------------------------------------
-    # ROW 3: Chat Actions
-    # -------------------------------------------------------------------------
-    
-    @discord.ui.button(label="Custom", style=discord.ButtonStyle.primary, emoji="✉️", row=3)
+    @discord.ui.button(label="Custom", style=discord.ButtonStyle.primary, emoji="✉️", row=1)
     async def send_message_btn(self, interaction: discord.Interaction, button: Button):
         """Open modal for custom message."""
         if interaction.user != self.ctx.author:
             await interaction.response.send_message("Only the command sender can use this.", ephemeral=True)
             return
         await interaction.response.send_modal(MessageModal())
+
+    # -------------------------------------------------------------------------
+    # ROW 2: Order Actions (IMPORTANT - Mark Delivered & Cancel)
+    # -------------------------------------------------------------------------
+    
+    @discord.ui.button(label="✅ MARK DELIVERED", style=discord.ButtonStyle.success, row=2)
+    async def confirm_delivery(self, interaction: discord.Interaction, button: Button):
+        """Mark order as delivered on the website."""
+        if interaction.user != self.ctx.author:
+            await interaction.response.send_message("Only the command sender can use this.", ephemeral=True)
+            return
+        
+        await interaction.response.defer(ephemeral=True)
+        
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            browser.playwright_executor, 
+            scraper.action_mark_delivered
+        )
+        
+        if result.get("success"):
+            await interaction.followup.send("✅ **Order Marked as Delivered on Website!**", ephemeral=True)
+        else:
+            await interaction.followup.send(f"❌ Failed: {result.get('error')}", ephemeral=True)
+
+    @discord.ui.button(label="⚠️ CANCEL ORDER", style=discord.ButtonStyle.danger, row=2)
+    async def cancel_order(self, interaction: discord.Interaction, button: Button):
+        """Cancel the order on the website."""
+        if interaction.user != self.ctx.author:
+            await interaction.response.send_message("Only the command sender can use this.", ephemeral=True)
+            return
+        
+        await interaction.response.defer(ephemeral=True)
+        
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            browser.playwright_executor, 
+            scraper.action_cancel_order
+        )
+        
+        if result.get("success"):
+            await interaction.followup.send("⚠️ **Order Cancelled on Website!**", ephemeral=True)
+        else:
+            await interaction.followup.send(f"❌ Failed: {result.get('error')}", ephemeral=True)
+
+    # -------------------------------------------------------------------------
+    # ROW 3: Navigation & Control
+    # -------------------------------------------------------------------------
+
+    @discord.ui.button(label="◀️ Older", style=discord.ButtonStyle.secondary, row=3)
+    async def prev_page(self, interaction: discord.Interaction, button: Button):
+        """Show older messages."""
+        if interaction.user != self.ctx.author:
+            await interaction.response.send_message("Only the command sender can use this.", ephemeral=True)
+            return
+        
+        if self.chat_page > 0:
+            self.chat_page -= 1
+        
+        await interaction.response.defer()
+
+    @discord.ui.button(label="Newer ▶️", style=discord.ButtonStyle.secondary, row=3)
+    async def next_page(self, interaction: discord.Interaction, button: Button):
+        """Show newer messages."""
+        if interaction.user != self.ctx.author:
+            await interaction.response.send_message("Only the command sender can use this.", ephemeral=True)
+            return
+        
+        total_pages = (len(self.chat_lines) + self.per_page - 1) // self.per_page
+        if self.chat_page < total_pages - 1:
+            self.chat_page += 1
+        
+        await interaction.response.defer()
 
     @discord.ui.button(label="Refresh", style=discord.ButtonStyle.secondary, emoji="🔄", row=3)
     async def refresh_btn(self, interaction: discord.Interaction, button: Button):
@@ -294,7 +354,6 @@ class OrderMonitorView(View):
         
         await interaction.response.defer(ephemeral=True)
         await interaction.followup.send("🔄 Refreshing...", ephemeral=True)
-        # The main loop will handle the refresh
 
     @discord.ui.button(label="Close", style=discord.ButtonStyle.danger, emoji="🛑", row=3)
     async def close_order(self, interaction: discord.Interaction, button: Button):
@@ -336,75 +395,6 @@ class OrderMonitorView(View):
             await interaction.followup.send(f"✅ **Sent:** {short_msg}", ephemeral=True)
         else:
             await interaction.followup.send(f"❌ **Failed:** {result.get('error')}", ephemeral=True)
-
-    # -------------------------------------------------------------------------
-    # ROW 4: Order Actions (Website buttons)
-    # -------------------------------------------------------------------------
-    
-    @discord.ui.button(label="Mark Delivered", style=discord.ButtonStyle.success, emoji="📦", row=4)
-    async def confirm_delivery(self, interaction: discord.Interaction, button: Button):
-        """Mark order as delivered on the website."""
-        if interaction.user != self.ctx.author:
-            await interaction.response.send_message("Only the command sender can use this.", ephemeral=True)
-            return
-        
-        await interaction.response.defer(ephemeral=True)
-        
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(
-            browser.playwright_executor, 
-            scraper.action_mark_delivered
-        )
-        
-        if result.get("success"):
-            await interaction.followup.send("✅ **Order Marked as Delivered on Website!**", ephemeral=True)
-        else:
-            await interaction.followup.send(f"❌ Failed: {result.get('error')}", ephemeral=True)
-
-    @discord.ui.button(label="Cancel Order", style=discord.ButtonStyle.danger, emoji="⚠️", row=4)
-    async def cancel_order(self, interaction: discord.Interaction, button: Button):
-        """Cancel the order on the website."""
-        if interaction.user != self.ctx.author:
-            await interaction.response.send_message("Only the command sender can use this.", ephemeral=True)
-            return
-        
-        await interaction.response.defer(ephemeral=True)
-        
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(
-            browser.playwright_executor, 
-            scraper.action_cancel_order
-        )
-        
-        if result.get("success"):
-            await interaction.followup.send("⚠️ **Order Cancelled on Website!**", ephemeral=True)
-        else:
-            await interaction.followup.send(f"❌ Failed: {result.get('error')}", ephemeral=True)
-
-    @discord.ui.button(label="◀️", style=discord.ButtonStyle.secondary, row=4)
-    async def prev_page(self, interaction: discord.Interaction, button: Button):
-        """Show older messages."""
-        if interaction.user != self.ctx.author:
-            await interaction.response.send_message("Only the command sender can use this.", ephemeral=True)
-            return
-        
-        if self.chat_page > 0:
-            self.chat_page -= 1
-        
-        await interaction.response.defer()
-
-    @discord.ui.button(label="▶️", style=discord.ButtonStyle.secondary, row=4)
-    async def next_page(self, interaction: discord.Interaction, button: Button):
-        """Show newer messages."""
-        if interaction.user != self.ctx.author:
-            await interaction.response.send_message("Only the command sender can use this.", ephemeral=True)
-            return
-        
-        total_pages = (len(self.chat_lines) + self.per_page - 1) // self.per_page
-        if self.chat_page < total_pages - 1:
-            self.chat_page += 1
-        
-        await interaction.response.defer()
 
     def update_chat_lines(self, lines: list):
         """Update the stored chat lines."""

@@ -113,7 +113,8 @@ def create_order_embed(info: dict, username: str, url: str, view: ui.OrderMonito
         chat_text = chat_text[:1021] + "..."
     embed.add_field(name="💬 Chat History", value=f"```\n{chat_text}\n```", inline=False)
     
-    embed.set_footer(text=f"Monitoring {username} • Updates every 10s")
+    from datetime import datetime as dt
+    embed.set_footer(text=f"Monitoring {username} • Last update: {dt.now().strftime('%H:%M:%S')}")
     
     return embed
 
@@ -294,32 +295,48 @@ async def get_order(ctx, username: str = None):
     await status_msg.delete()
 
     # Monitor Loop
+    update_count = 0
     while view.monitoring:
-        await asyncio.sleep(10)
+        await asyncio.sleep(8)  # Slightly faster updates
         if not view.monitoring:
             break
         
-        new_result = await loop.run_in_executor(
-            browser.playwright_executor, 
-            scraper.scrape_current_order_page
-        )
-        
-        if "success" in new_result:
-            new_info = new_result["data"]
+        try:
+            new_result = await loop.run_in_executor(
+                browser.playwright_executor, 
+                scraper.scrape_current_order_page
+            )
             
-            # Update chat lines
-            if new_info.get("chat_html"):
-                parsed = utils.parse_html_to_text(new_info["chat_html"])
-                view.update_chat_lines(parsed.get("clean", []))
-            
-            new_embed = create_order_embed(new_info, username, order_url, view)
-            
-            try:
-                await msg.edit(embed=new_embed, view=view)
-            except discord.NotFound:
-                break
-        else:
-            utils.consoleprint(f"Monitor Loop Error: {new_result.get('error')}")
+            if new_result.get("success"):
+                new_info = new_result["data"]
+                update_count += 1
+                
+                # Update chat lines
+                if new_info.get("chat_html"):
+                    parsed = utils.parse_html_to_text(new_info["chat_html"])
+                    new_lines = parsed.get("clean", [])
+                    
+                    # Check if chat has new messages
+                    old_count = len(view.chat_lines)
+                    view.update_chat_lines(new_lines)
+                    
+                    if len(new_lines) > old_count:
+                        utils.consoleprint(f"New messages detected! ({old_count} -> {len(new_lines)})")
+                
+                new_embed = create_order_embed(new_info, username, order_url, view)
+                new_embed.set_footer(text=f"Monitoring {username} • Update #{update_count} • Every 8s")
+                
+                try:
+                    await msg.edit(embed=new_embed, view=view)
+                except discord.NotFound:
+                    utils.consoleprint("Message was deleted, stopping monitor.")
+                    break
+                except discord.HTTPException as e:
+                    utils.consoleprint(f"Failed to update message: {e}")
+            else:
+                utils.consoleprint(f"Monitor Loop Error: {new_result.get('error')}")
+        except Exception as e:
+            utils.consoleprint(f"Monitor exception: {e}")
 
     # Cleanup - close order page
     await loop.run_in_executor(browser.playwright_executor, scraper.close_order_page_logic)
