@@ -137,10 +137,12 @@ def create_order_embed(info: dict, username: str, url: str, view: ui.OrderMonito
         timestamp=datetime.utcnow()
     )
     
-    # Item name at the top (if available)
+    # Item name at the top with BLUE color (if available)
     item_name = info.get('itemName', 'N/A')
     if item_name and item_name != 'N/A':
-        embed.add_field(name="🏷️ Item", value=f"**{item_name}**", inline=False)
+        # Use ANSI blue coloring in code block
+        blue_item = f"```ansi\n{utils.ANSI['bold_blue']}{item_name}{utils.ANSI['reset']}\n```"
+        embed.add_field(name="🏷️ Item", value=blue_item, inline=False)
     
     # Status bar with visual indicator
     status_bar = create_status_bar(status)

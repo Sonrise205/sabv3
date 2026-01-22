@@ -158,8 +158,22 @@ def scrape_current_order_page():
                 };
                 
                 const game = getVal("Game");
-                const quantity = getVal("Quantity");
                 const buyer = getVal("Buyer");
+                
+                // Quantity might be in different places - try multiple selectors
+                let quantity = getVal("Quantity");
+                if (quantity === "N/A") {
+                    // Try looking in payment details or other sections
+                    const allText = document.body.innerText;
+                    const qtyMatch = allText.match(/Quantity[:\\s]+([\\d,.]+\\s*[KkMm]?)/i);
+                    if (qtyMatch) quantity = qtyMatch[1].trim();
+                }
+                // Also try to find it in the offer description
+                if (quantity === "N/A" && itemName !== "N/A") {
+                    // Sometimes quantity is in the item name like "100K Gold"
+                    const numMatch = itemName.match(/^([\\d,.]+\\s*[KkMm]?)\\s/);
+                    if (numMatch) quantity = numMatch[1];
+                }
                 
                 // 4. Get Status from Order Header
                 let status = "Unknown";
