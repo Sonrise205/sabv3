@@ -3,10 +3,12 @@
 import browser
 import utils
 
+from collections import deque
+
 # Track last conversation for new chat detection
 last_top_chat_signature = None
-# Track notified ORDER IDs to prevent duplicate notifications
-notified_order_ids = set()
+# Track notified ORDER IDs to prevent duplicate notifications (auto-removes oldest when full)
+notified_order_ids = deque(maxlen=100)
 
 
 def scrape_chats_list():
@@ -173,6 +175,11 @@ def scrape_current_order_page():
                     // Sometimes quantity is in the item name like "100K Gold"
                     const numMatch = itemName.match(/^([\\d,.]+\\s*[KkMm]?)\\s/);
                     if (numMatch) quantity = numMatch[1];
+                }
+                
+                // Default to "1" for single item orders
+                if (quantity === "N/A") {
+                    quantity = "1";
                 }
                 
                 // 4. Get Status from Order Header
@@ -367,13 +374,9 @@ def check_new_top_conversation():
                         utils.consoleprint(f"Order {order_id[:8]}... already notified - skipping duplicate")
                         return None
                     
-                    # New order - add to notified set
-                    notified_order_ids.add(order_id)
+                    # New order - add to notified deque (auto-removes oldest if > 100)
+                    notified_order_ids.append(order_id)
                     utils.consoleprint(f"New Order detected: {order_id[:8]}...")
-                    
-                    # Limit set size (keep last 100 orders)
-                    if len(notified_order_ids) > 100:
-                        notified_order_ids.pop()
                     
                     return top_chat
                 else:
