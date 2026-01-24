@@ -396,6 +396,139 @@ def check_new_top_conversation():
 
 # --- ACTION FUNCTIONS ---
 
+def scrape_active_orders():
+    """Scrape active (pending) orders from the orders page."""
+    utils.consoleprint("Scraping active orders...")
+    try:
+        page, _ = browser.ensure_browser_and_iframe()
+        
+        with browser.browser_lock:
+            # Navigate to sold orders page
+            page.goto("https://www.eldorado.gg/dashboard/orders/sold", timeout=30000)
+            page.wait_for_load_state("networkidle")
+            page.wait_for_timeout(2000)
+            
+            # Scrape orders
+            orders_script = """
+            () => {
+                const orders = [];
+                // Find order rows/cards
+                const orderElements = document.querySelectorAll("eld-seller-order-row, .order-row, [class*='order']");
+                
+                for (const el of orderElements) {
+                    const text = el.innerText || "";
+                    
+                    // Only get Pending orders
+                    if (!text.toLowerCase().includes("pending")) continue;
+                    
+                    // Try to extract info
+                    let customerName = "Unknown";
+                    let itemName = "Unknown Item";
+                    let earnings = "N/A";
+                    let timeLeft = "N/A";
+                    let status = "Pending";
+                    let orderId = null;
+                    
+                    // Look for customer name
+                    const nameEl = el.querySelector("[class*='buyer'], [class*='customer'], [class*='user']");
+                    if (nameEl) customerName = nameEl.innerText.trim();
+                    
+                    // Look for item/offer name
+                    const itemEl = el.querySelector("[class*='offer'], [class*='item'], [class*='title']");
+                    if (itemEl) itemName = itemEl.innerText.trim();
+                    
+                    // Look for price/earnings
+                    const priceEl = el.querySelector("[class*='price'], [class*='earn'], [class*='amount']");
+                    if (priceEl) earnings = priceEl.innerText.trim();
+                    
+                    // Look for time
+                    const timeEl = el.querySelector("[class*='time'], [class*='delivery'], [class*='timer']");
+                    if (timeEl) timeLeft = timeEl.innerText.trim();
+                    
+                    // Look for order link/ID
+                    const linkEl = el.querySelector("a[href*='/order/']");
+                    if (linkEl) {
+                        const href = linkEl.getAttribute("href") || "";
+                        const match = href.match(/order\\/([a-f0-9-]+)/i);
+                        if (match) orderId = match[1];
+                    }
+                    
+                    // Also check for status chip
+                    const statusEl = el.querySelector("eld-chip, [class*='status']");
+                    if (statusEl) status = statusEl.innerText.trim();
+                    
+                    if (customerName !== "Unknown" || itemName !== "Unknown Item") {
+                        orders.push({
+                            customerName,
+                            itemName: itemName.substring(0, 50),
+                            earnings,
+                            timeLeft,
+                            status,
+                            orderId
+                        });
+                    }
+                }
+                
+                return orders.slice(0, 10);  // Max 10 orders
+            }
+            """
+            
+            orders = page.evaluate(orders_script)
+            
+            # If no orders found with the above method, try alternative selectors
+            if not orders:
+                alt_script = """
+                () => {
+                    const orders = [];
+                    const rows = document.querySelectorAll("table tr, .order-list-item, [class*='OrderRow']");
+                    
+                    for (const row of rows) {
+                        const text = row.innerText || "";
+                        if (!text.toLowerCase().includes("pending")) continue;
+                        if (text.includes("No orders")) continue;
+                        
+                        // Extract text content
+                        const cells = row.querySelectorAll("td, div");
+                        let data = { customerName: "", itemName: "", earnings: "", timeLeft: "", status: "Pending", orderId: null };
+                        
+                        cells.forEach((cell, i) => {
+                            const cellText = cell.innerText.trim();
+                            if (cellText.includes("$")) data.earnings = cellText;
+                            if (cellText.includes("min") || cellText.includes("hour")) data.timeLeft = cellText;
+                            if (cellText.toLowerCase().includes("pending")) data.status = cellText;
+                        });
+                        
+                        // Get first significant text as item name
+                        const firstText = text.split("\\n")[0];
+                        if (firstText && firstText.length < 60) data.itemName = firstText;
+                        
+                        // Look for link
+                        const link = row.querySelector("a[href*='order']");
+                        if (link) {
+                            const match = (link.href || "").match(/order\\/([a-f0-9-]+)/i);
+                            if (match) data.orderId = match[1];
+                        }
+                        
+                        if (data.itemName || data.earnings) {
+                            orders.push(data);
+                        }
+                    }
+                    
+                    return orders.slice(0, 10);
+                }
+                """
+                orders = page.evaluate(alt_script)
+            
+            # Return to messages page
+            browser.iframe = None
+            
+            return {"success": True, "orders": orders}
+            
+    except Exception as e:
+        utils.consoleprint(f"Error scraping active orders: {e}")
+        return {"error": str(e)}
+
+
 def action_mark_delivered():
     """Click the 'Order delivered' button."""
     try:

@@ -402,6 +402,68 @@ async def get_order(ctx, username: str = None):
         pass
 
 
+@bot.command(name="active")
+async def active_orders(ctx):
+    """
+    Show active orders that need to be delivered.
+    
+    Usage: .active
+    """
+    status_msg = await ctx.send("📦 Fetching active orders...")
+    
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(
+        browser.playwright_executor,
+        scraper.scrape_active_orders
+    )
+    
+    if "error" in result:
+        await status_msg.edit(content=f"❌ Error: {result['error']}")
+        return
+    
+    orders = result.get("orders", [])
+    
+    if not orders:
+        embed = discord.Embed(
+            title="📦 Active Orders",
+            description="✅ No pending orders! All caught up.",
+            color=0x2ECC71
+        )
+        await status_msg.edit(content=None, embed=embed)
+        return
+    
+    # Build embed
+    embed = discord.Embed(
+        title=f"📦 Active Orders ({len(orders)})",
+        description="Orders waiting to be delivered:",
+        color=0xFFA500,
+        timestamp=datetime.utcnow()
+    )
+    
+    for i, order in enumerate(orders[:10], 1):
+        customer = order.get('customerName', 'Unknown')
+        item = order.get('itemName', 'Unknown Item')
+        earnings = order.get('earnings', 'N/A')
+        time_left = order.get('timeLeft', 'N/A')
+        status = order.get('status', 'Pending')
+        
+        # Format field
+        field_value = f"🏷️ {item}\n💰 {earnings} • ⏳ {time_left}\n📊 {status}"
+        
+        embed.add_field(
+            name=f"{i}. {customer}",
+            value=field_value,
+            inline=False
+        )
+    
+    embed.set_footer(text="Click a button to get the order command")
+    
+    # Create view with buttons
+    view = ui.ActiveOrdersView(ctx, orders)
+    
+    await status_msg.edit(content=None, embed=embed, view=view)
+
+
 @bot.command(name="send")
 async def quick_send(ctx, username: str = None, *, message: str = None):
     """
@@ -496,6 +558,7 @@ async def commands_help(ctx):
         ("`.list`", "Show recent conversations with pagination"),
         ("`.chat <user>`", "View chat history with a customer"),
         ("`.order <user>`", "Open order page with full controls"),
+        ("`.active`", "Show pending orders that need delivery"),
         ("`.send <user> <msg>`", "Quick send a message"),
         ("`.templates`", "Show available message templates"),
     ]

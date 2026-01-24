@@ -509,6 +509,48 @@ class ChatView(View):
 # CONVERSATION LIST VIEW - For .list command
 # =============================================================================
 
+class ActiveOrdersView(View):
+    """View for displaying active orders with quick actions."""
+    
+    def __init__(self, ctx, orders):
+        super().__init__(timeout=300)
+        self.ctx = ctx
+        self.orders = orders or []
+        
+        # Add buttons for first 5 orders (Discord limit: 5 buttons per row)
+        for i, order in enumerate(self.orders[:5]):
+            customer = order.get('customerName', 'Unknown')[:15]
+            btn = discord.ui.Button(
+                label=f"#{i+1} {customer}",
+                style=discord.ButtonStyle.primary,
+                custom_id=f"order_{i}",
+                row=1
+            )
+            btn.callback = self._make_callback(i, order)
+            self.add_item(btn)
+    
+    def _make_callback(self, index, order):
+        async def callback(interaction: discord.Interaction):
+            if interaction.user != self.ctx.author:
+                await interaction.response.send_message("Only the command sender can use this.", ephemeral=True)
+                return
+            
+            customer = order.get('customerName', 'Unknown').split('-')[0]
+            await interaction.response.send_message(
+                f"Use `.order {customer}` to open this order!",
+                ephemeral=True
+            )
+        return callback
+    
+    @discord.ui.button(label="Refresh", style=discord.ButtonStyle.secondary, emoji="🔄", row=2)
+    async def refresh_btn(self, interaction: discord.Interaction, button: Button):
+        if interaction.user != self.ctx.author:
+            await interaction.response.send_message("Only the command sender can use this.", ephemeral=True)
+            return
+        await interaction.response.defer()
+        await interaction.followup.send("Use `.active` again to refresh.", ephemeral=True)
+
+
 class NewCustomerView(View):
     """View with button to go to order page from new customer notification."""
     
