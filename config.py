@@ -5,8 +5,11 @@ import os
 # Discord Bot Token
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN", "")
 
-# Channel ID for new sale notifications
+# Channel ID for new sale notifications (fallback if webhook not set)
 CHANNEL_ID_NEW_SALE = int(os.getenv("CHANNEL_ID_NEW_SALE", "0"))
+
+# Webhook URL for new order notifications (preferred - separate rate limit!)
+WEBHOOK_URL_NEW_SALE = os.getenv("WEBHOOK_URL_NEW_SALE", "")
 
 # Path to browser state file (for saved login session)
 STATE_PATH = os.getenv("STATE_PATH", "state.json")

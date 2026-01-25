@@ -4,6 +4,7 @@ import asyncio
 from datetime import datetime
 import discord
 from discord.ext import commands
+import aiohttp
 
 import config
 import utils
@@ -19,22 +20,54 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix=".", intents=intents)
 
+# Lock to prevent concurrent browser operations
+browser_command_lock = asyncio.Lock()
+# Track if an order is being monitored (browser is busy)
+order_monitoring_active = False
+
 
 # =============================================================================
 # BACKGROUND TASKS
 # =============================================================================
 
+async def send_webhook_notification(embed_data: dict):
+    """Send notification via webhook (separate rate limit pool!)."""
+    webhook_url = config.WEBHOOK_URL_NEW_SALE
+    if not webhook_url:
+        return False
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            webhook_payload = {
+                "embeds": [embed_data],
+                "username": "Eldorado Alerts",
+                "avatar_url": "https://www.eldorado.gg/favicon.ico"
+            }
+            async with session.post(webhook_url, json=webhook_payload) as resp:
+                if resp.status in (200, 204):
+                    return True
+                else:
+                    utils.consoleprint(f"Webhook failed: {resp.status}")
+                    return False
+    except Exception as e:
+        utils.consoleprint(f"Webhook error: {e}")
+        return False
+
+
 async def monitor_new_conversations():
     """Background task to detect new customer conversations."""
     await bot.wait_until_ready()
-    channel = bot.get_channel(config.CHANNEL_ID_NEW_SALE)
     
-    # Warn if channel not configured
-    if not channel:
-        utils.consoleprint(f"⚠️ WARNING: CHANNEL_ID_NEW_SALE not configured or invalid! New customer notifications disabled.")
-        utils.consoleprint(f"   Current value: {config.CHANNEL_ID_NEW_SALE}")
+    # Check notification method
+    use_webhook = bool(config.WEBHOOK_URL_NEW_SALE)
+    channel = bot.get_channel(config.CHANNEL_ID_NEW_SALE) if not use_webhook else None
+    
+    if use_webhook:
+        utils.consoleprint(f"✅ New customer notifications via WEBHOOK (separate rate limit!)")
+    elif channel:
+        utils.consoleprint(f"✅ New customer notifications to channel: {channel.name}")
     else:
-        utils.consoleprint(f"✅ New customer notifications will be sent to channel: {channel.name} ({channel.id})")
+        utils.consoleprint(f"⚠️ WARNING: No notification method configured!")
     
     while not bot.is_closed():
         try:
@@ -44,7 +77,7 @@ async def monitor_new_conversations():
                 scraper.check_new_top_conversation
             )
             
-            if top_chat and channel:
+            if top_chat and (use_webhook or channel):
                 # Extract username (remove the -XXXX suffix for display)
                 full_name = top_chat['name']
                 username = full_name.split('-')[0] if '-' in full_name else full_name
@@ -59,23 +92,40 @@ async def monitor_new_conversations():
                 else:
                     message_preview = utils.truncate_text(message_preview, 150)
                 
-                # Create GREEN embed
-                embed = discord.Embed(
-                    title="🔔 New Customer Message!",
-                    description=f"**{full_name}** has sent you a message!",
-                    color=0x2ECC71,  # GREEN
-                    timestamp=datetime.utcnow()
-                )
-                embed.add_field(name="⏰ Time", value=top_chat['time'] or "Just now", inline=True)
-                embed.add_field(name="👤 Customer", value=full_name, inline=True)
-                embed.add_field(name="💬 Message", value=message_preview, inline=False)
-                embed.set_footer(text=f"Use .order {username} to manage this order")
+                # Build embed data
+                embed_data = {
+                    "title": "🔔 New Customer Message!",
+                    "description": f"**{full_name}** has sent you a message!",
+                    "color": 0x2ECC71,  # GREEN
+                    "fields": [
+                        {"name": "⏰ Time", "value": top_chat['time'] or "Just now", "inline": True},
+                        {"name": "👤 Customer", "value": full_name, "inline": True},
+                        {"name": "💬 Message", "value": message_preview, "inline": False}
+                    ],
+                    "footer": {"text": f"Use .order {username} to manage this order"},
+                    "timestamp": datetime.utcnow().isoformat()
+                }
                 
-                # Create view with buttons
-                view = ui.NewCustomerView(username)
-                
-                await channel.send(embed=embed, view=view)
-                utils.consoleprint(f"📨 Notification sent for: {full_name}")
+                if use_webhook:
+                    # Send via webhook (no rate limit issues!)
+                    success = await send_webhook_notification(embed_data)
+                    if success:
+                        utils.consoleprint(f"📨 Webhook notification sent for: {full_name}")
+                else:
+                    # Fallback to bot message
+                    embed = discord.Embed(
+                        title=embed_data["title"],
+                        description=embed_data["description"],
+                        color=embed_data["color"],
+                        timestamp=datetime.utcnow()
+                    )
+                    for field in embed_data["fields"]:
+                        embed.add_field(name=field["name"], value=field["value"], inline=field["inline"])
+                    embed.set_footer(text=embed_data["footer"]["text"])
+                    
+                    view = ui.NewCustomerView(username)
+                    await channel.send(embed=embed, view=view)
+                    utils.consoleprint(f"📨 Notification sent for: {full_name}")
                 
         except Exception as e:
             utils.consoleprint(f"Monitor error: {e}")
@@ -217,23 +267,28 @@ async def on_ready():
 @bot.command(name="list")
 async def list_chats(ctx):
     """List recent conversations with pagination."""
-    status_msg = await ctx.send("📬 Loading conversations...")
+    if browser_command_lock.locked():
+        await ctx.send("⏳ Another command is using the browser. Please wait...")
+        return
     
-    loop = asyncio.get_event_loop()
-    data = await loop.run_in_executor(browser.playwright_executor, scraper.scrape_chats_list)
+    async with browser_command_lock:
+        status_msg = await ctx.send("📬 Loading conversations...")
+        
+        loop = asyncio.get_event_loop()
+        data = await loop.run_in_executor(browser.playwright_executor, scraper.scrape_chats_list)
 
-    if "error" in data:
-        await status_msg.edit(content=f"❌ Error: {data['error']}")
-        return
+        if "error" in data:
+            await status_msg.edit(content=f"❌ Error: {data['error']}")
+            return
 
-    chats = data.get("chats", [])
-    if not chats:
-        await status_msg.edit(content="📭 No conversations found.")
-        return
+        chats = data.get("chats", [])
+        if not chats:
+            await status_msg.edit(content="📭 No conversations found.")
+            return
 
-    # Create paginated view
-    view = ui.ConversationListView(ctx, chats)
-    await status_msg.edit(content=None, embed=view.get_embed(), view=view)
+        # Create paginated view
+        view = ui.ConversationListView(ctx, chats)
+        await status_msg.edit(content=None, embed=view.get_embed(), view=view)
 
 
 @bot.command(name="chat")
@@ -254,30 +309,35 @@ async def get_chat(ctx, username: str = None):
         await ctx.send(embed=embed)
         return
     
-    status_msg = await ctx.send(f"💬 Fetching chat with **{username}**...")
-    
-    loop = asyncio.get_event_loop()
-    data = await loop.run_in_executor(
-        browser.playwright_executor, 
-        scraper.scrape_specific_conversation, 
-        username
-    )
-    
-    if "error" in data:
-        await status_msg.edit(content=f"❌ Error: {data['error']}")
+    if browser_command_lock.locked():
+        await ctx.send("⏳ Another command is using the browser. Please wait...")
         return
     
-    clean_lines = data.get("clean", [])
-    
-    if not clean_lines:
-        await status_msg.edit(content=f"📭 No messages found with **{username}**.")
-        return
-    
-    # Create paginated chat view
-    view = ui.ChatView(ctx, username, clean_lines)
-    view.update_buttons()
-    
-    await status_msg.edit(content=None, embed=view.get_embed(), view=view)
+    async with browser_command_lock:
+        status_msg = await ctx.send(f"💬 Fetching chat with **{username}**...")
+        
+        loop = asyncio.get_event_loop()
+        data = await loop.run_in_executor(
+            browser.playwright_executor, 
+            scraper.scrape_specific_conversation, 
+            username
+        )
+        
+        if "error" in data:
+            await status_msg.edit(content=f"❌ Error: {data['error']}")
+            return
+        
+        clean_lines = data.get("clean", [])
+        
+        if not clean_lines:
+            await status_msg.edit(content=f"📭 No messages found with **{username}**.")
+            return
+        
+        # Create paginated chat view
+        view = ui.ChatView(ctx, username, clean_lines)
+        view.update_buttons()
+        
+        await status_msg.edit(content=None, embed=view.get_embed(), view=view)
 
 
 @bot.command(name="order")
@@ -287,6 +347,8 @@ async def get_order(ctx, username: str = None):
     
     Usage: .order <username>
     """
+    global order_monitoring_active
+    
     if not username:
         embed = discord.Embed(
             title="📦 Order Command",
@@ -303,15 +365,25 @@ async def get_order(ctx, username: str = None):
         await ctx.send(embed=embed)
         return
 
-    status_msg = await ctx.send(f"🔍 Searching for order link for **{username}**...")
-    loop = asyncio.get_event_loop()
+    if order_monitoring_active:
+        await ctx.send("⏳ An order is already being monitored. Close it first with the Close button.")
+        return
+    
+    if browser_command_lock.locked():
+        await ctx.send("⏳ Another command is using the browser. Please wait...")
+        return
 
-    # Navigate to order page
-    nav_result = await loop.run_in_executor(
-        browser.playwright_executor, 
-        scraper.navigate_to_order_page, 
-        username
-    )
+    async with browser_command_lock:
+        order_monitoring_active = True
+        status_msg = await ctx.send(f"🔍 Searching for order link for **{username}**...")
+        loop = asyncio.get_event_loop()
+
+        # Navigate to order page
+        nav_result = await loop.run_in_executor(
+            browser.playwright_executor, 
+            scraper.navigate_to_order_page, 
+            username
+        )
     
     if "error" in nav_result:
         await status_msg.edit(content=f"❌ Error: {nav_result['error']}")
