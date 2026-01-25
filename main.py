@@ -267,6 +267,10 @@ async def on_ready():
 @bot.command(name="list")
 async def list_chats(ctx):
     """List recent conversations with pagination."""
+    if order_monitoring_active:
+        await ctx.send("⏳ An order is being monitored. Close it first with the Close button.")
+        return
+    
     if browser_command_lock.locked():
         await ctx.send("⏳ Another command is using the browser. Please wait...")
         return
@@ -307,6 +311,10 @@ async def get_chat(ctx, username: str = None):
         embed.add_field(name="Usage", value="`.chat <username>`", inline=False)
         embed.add_field(name="Example", value="`.chat JohnDoe123`", inline=False)
         await ctx.send(embed=embed)
+        return
+    
+    if order_monitoring_active:
+        await ctx.send("⏳ An order is being monitored. Close it first with the Close button.")
         return
     
     if browser_command_lock.locked():
@@ -386,6 +394,7 @@ async def get_order(ctx, username: str = None):
         )
     
     if "error" in nav_result:
+        order_monitoring_active = False  # Reset on error
         await status_msg.edit(content=f"❌ Error: {nav_result['error']}")
         return
     
@@ -399,6 +408,7 @@ async def get_order(ctx, username: str = None):
     )
     
     if "error" in scrape_result:
+        order_monitoring_active = False  # Reset on error
         await status_msg.edit(content=f"❌ Scrape Error: {scrape_result['error']}")
         return
     
@@ -464,6 +474,10 @@ async def get_order(ctx, username: str = None):
     # Cleanup - close order page
     await loop.run_in_executor(browser.playwright_executor, scraper.close_order_page_logic)
     
+    # CRITICAL: Reset the monitoring flag so .order can be used again
+    order_monitoring_active = False
+    utils.consoleprint(f"Order monitoring stopped for {username}")
+    
     # Update embed to show stopped state
     try:
         final_embed = msg.embeds[0]
@@ -481,13 +495,25 @@ async def active_orders(ctx):
     
     Usage: .active
     """
+    # Check if order is being monitored - can't navigate away
+    if order_monitoring_active:
+        await ctx.send("⏳ An order is being monitored. Close it first with the Close button before using `.active`.")
+        return
+    
+    # Check if browser is busy with another command
+    if browser_command_lock.locked():
+        await ctx.send("⏳ Another command is using the browser. Please wait...")
+        return
+    
     status_msg = await ctx.send("📦 Fetching active orders...")
     
     loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(
-        browser.playwright_executor,
-        scraper.scrape_active_orders
-    )
+    
+    async with browser_command_lock:
+        result = await loop.run_in_executor(
+            browser.playwright_executor,
+            scraper.scrape_active_orders
+        )
     
     if "error" in result:
         await status_msg.edit(content=f"❌ Error: {result['error']}")
@@ -552,6 +578,14 @@ async def quick_send(ctx, username: str = None, *, message: str = None):
         embed.add_field(name="Usage", value="`.send <username> <message>`", inline=False)
         embed.add_field(name="Example", value="`.send JohnDoe123 Hello! What is your username?`", inline=False)
         await ctx.send(embed=embed)
+        return
+    
+    if order_monitoring_active:
+        await ctx.send("⏳ An order is being monitored. Use the Quick Reply buttons instead, or close the order first.")
+        return
+    
+    if browser_command_lock.locked():
+        await ctx.send("⏳ Another command is using the browser. Please wait...")
         return
     
     status_msg = await ctx.send(f"✉️ Sending message to **{username}**...")
